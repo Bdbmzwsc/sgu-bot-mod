@@ -231,6 +231,18 @@ if (!config.appId || !config.appSecret) {
 				console.log(`忽略未允许的群 ${event.group_openid}`);
 				return;
 			}
+			const debugText = eventText(event);
+			if (debugText.toLowerCase().includes("zt") || (Array.isArray(event.mentions) && event.mentions.length > 0)) {
+				console.log("ZT_DEBUG " + JSON.stringify({
+					content: event.content,
+					message_type: event.message_type,
+					message_scene: event.message_scene,
+					mentions: event.mentions,
+					msg_elements: event.msg_elements,
+					keys: Object.keys(event),
+					author: event.author,
+				}));
+			}
 			if (repeatedReply(event)) {
 				console.log("忽略重复的群消息");
 				return;

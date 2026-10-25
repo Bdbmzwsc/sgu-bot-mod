@@ -388,6 +388,7 @@ export function panelItems() {
 }
 
 async function handleZt({ zerotier, parsed, event, role, member, auditPath, access }) {
+	console.log("ZT_HANDLER " + JSON.stringify({ role, raw: parsed.raw, arg: parsed.arg, mentions: event.mentions }));
 	const parts = parsed.arg.split(/\s+/).filter(Boolean);
 	const command = (parts[0] || "").toLowerCase();
 	if (command === "pending" || command === "all") {
