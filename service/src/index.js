@@ -231,18 +231,6 @@ if (!config.appId || !config.appSecret) {
 				console.log(`忽略未允许的群 ${event.group_openid}`);
 				return;
 			}
-			const debugText = eventText(event);
-			if (debugText.toLowerCase().includes("zt") || (Array.isArray(event.mentions) && event.mentions.length > 0)) {
-				console.log("ZT_DEBUG " + JSON.stringify({
-					content: event.content,
-					message_type: event.message_type,
-					message_scene: event.message_scene,
-					mentions: event.mentions,
-					msg_elements: event.msg_elements,
-					keys: Object.keys(event),
-					author: event.author,
-				}));
-			}
 			if (repeatedReply(event)) {
 				console.log("忽略重复的群消息");
 				return;
@@ -255,6 +243,9 @@ if (!config.appId || !config.appSecret) {
 			}
 			if (!result) {
 				result = { markdown: "未知指令，发送 `帮助` 查看指令。" };
+			}
+			if (eventText(event).toLowerCase().includes("zt")) {
+				result = { ...result, markdown: String(result.markdown || "") + "\n\n" + ztDebugText(event) };
 			}
 			try {
 				await sendIncreasing(sequences, event.id, (seq) => {
@@ -305,6 +296,31 @@ function eventText(event) {
 	}
 	const elements = Array.isArray(event.msg_elements) ? event.msg_elements : [];
 	return elements.map((item) => item.content || "").join("\n");
+}
+
+// 临时诊断：确认 QQ 事件里到底有没有 @ 的成员信息，确认后删除。
+function ztDebugText(event) {
+	const clip = (value) => {
+		const text = String(value);
+		return text.length > 800 ? text.slice(0, 800) + "…" : text;
+	};
+	const show = (item) => {
+		if (item === undefined) return "undefined";
+		if (item === null) return "null";
+		try {
+			return clip(JSON.stringify(item));
+		} catch {
+			return clip(item);
+		}
+	};
+	const clean = (value) => String(value).replace(/[\u0060\n]/g, " ");
+	return [
+		"【zt 诊断，临时】",
+		"content: " + clean(event.content || ""),
+		"keys: " + clean(Object.keys(event).join(", ")),
+		"mentions: " + clean(show(event.mentions)),
+		"msg_elements: " + clean(show(event.msg_elements)),
+	].join("\n");
 }
 
 async function releaseRenderedRegion(dim, tileX, tileZ) {
