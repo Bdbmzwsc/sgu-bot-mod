@@ -240,7 +240,17 @@ export function createAccess({ dataDir, now = () => Date.now() }) {
 		return "";
 	}
 
-	return { view, authorized, claim, confirm, applyProfile, notePending, isPending, rememberName, registeredBy };
+	function nameOf(identity) {
+		const wanted = String(identity || "");
+		if (!wanted) return "";
+		for (const [memberOpenid, row] of members) {
+			if (memberOpenid !== wanted && row?.unionOpenid !== wanted) continue;
+			return row?.username || row?.nickname || "";
+		}
+		return "";
+	}
+
+	return { view, authorized, claim, confirm, applyProfile, notePending, isPending, rememberName, registeredBy, nameOf };
 }
 
 export function readCookie(header, name) {

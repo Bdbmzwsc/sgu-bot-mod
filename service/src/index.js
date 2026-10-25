@@ -15,6 +15,9 @@ import { encodeLosslessWebp } from "./map/webp.js";
 import { createQq } from "./qq/client.js";
 import { startGateway } from "./qq/gateway.js";
 import { sendIncreasing } from "./qq/msg-seq.js";
+import { createZtClient } from "./zerotier/client.js";
+import { createZtService } from "./zerotier/service.js";
+import { createZtStore } from "./zerotier/store.js";
 
 await loadEnv();
 const config = loadConfig();
@@ -50,11 +53,16 @@ link.setTileHandler(async (tile) => {
 	}
 });
 const access = createAccess({ dataDir: config.dataDir });
+const zerotier = createZtService({
+	client: createZtClient(config),
+	store: createZtStore({ dataDir: config.dataDir }),
+});
 const handle = createHandler({
 	bridge,
 	config,
 	auditPath: path.join(config.dataDir, "audit.log"),
 	access,
+	zerotier,
 });
 
 const sequences = new Map();
@@ -144,6 +152,11 @@ async function refreshMap() {
 const httpServer = await startHttp({ map, bridge, port: config.httpPort, access, link, bridgeToken: config.bridgeToken });
 console.log(`网页地图 http://127.0.0.1:${httpServer.port}/`);
 console.log(`世界目录 ${config.worldPath}`);
+if (config.ztNetworkId && config.ztToken) {
+	console.log("ZeroTier controller " + config.ztUrl + " 网络 " + config.ztNetworkId);
+} else {
+	console.log("未配置 ZT_NETWORK_ID / ZT_TOKEN，ZeroTier 授权指令未启用");
+}
 setTimeout(scheduleRefresh, 20000);
 
 if (!config.appId || !config.appSecret) {

@@ -15,6 +15,9 @@ export function loadConfig(env = process.env) {
 		mapPublicUrl: env.MAP_PUBLIC_URL || "",
 		allowedGroups: groups,
 		httpPort: Number(env.HTTP_PORT || 8880),
+		ztUrl: env.ZT_URL || "http://127.0.0.1:9993",
+		ztToken: env.ZT_TOKEN || "",
+		ztNetworkId: (env.ZT_NETWORK_ID || "").trim().toLowerCase(),
 		dataDir: env.DATA_DIR || path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "data"),
 	};
 }

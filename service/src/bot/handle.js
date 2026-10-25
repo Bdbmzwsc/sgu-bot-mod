@@ -9,6 +9,8 @@ const DIMENSIONS = {
 	"minecraft:the_end": "末地",
 };
 
+const ZT_ADDRESS = /^[0-9a-f]{10}$/i;
+
 export function parseCommand(content) {
 	let text = String(content || "").replace(/\u00a0/g, " ").trim();
 	text = text.replace(/^(?:@\S+\s*)+/, "");
@@ -26,7 +28,7 @@ export function parseCommand(content) {
 	return { name: aliases[head] || head || "", arg, raw: text };
 }
 
-export function createHandler({ bridge, config, auditPath, access }) {
+export function createHandler({ bridge, config, auditPath, access, zerotier }) {
 	return async function handle(event) {
 		const group = event.group_openid;
 		const role = event.author?.member_role || "member";
@@ -126,6 +128,14 @@ export function createHandler({ bridge, config, auditPath, access }) {
 			}
 			return registerMember(bridge, access, member, registration);
 		}
+		if (zerotier && parsed.name === "zt") {
+			try {
+				return await handleZt({ zerotier, parsed, event, role, member, auditPath, access });
+			} catch (error) {
+				await audit(auditPath, "zt_fail", event, parsed.raw + " " + error.message);
+				return { markdown: "ZeroTier 操作失败：" + escapeMd(error.message) };
+			}
+		}
 		if (access?.isPending(member.memberOpenid)) {
 			return { markdown: "请 @我 发送：`登记 正版ID 服内昵称`，例如 `登记 Steve 小明`。" };
 		}
@@ -152,6 +162,8 @@ function helpText() {
 		"- `死亡 玩家名`：最近死亡坐标",
 		"- `执行 指令`：管理员运行白名单里的指令",
 		"- `地图`：打开网页地图",
+		"- `zt add <地址>`：申请 ZeroTier 网络授权",
+		"- `zt pending` / `zt all`：管理员查看待审、全部通过",
 		"- `登记 正版ID 服内昵称`：设置服内前缀",
 	].join("\n");
 }
@@ -371,5 +383,175 @@ export function panelItems() {
 		{ type: "command", name: "死亡", desc: "查最近死亡坐标" },
 		{ type: "command", name: "执行", desc: "运行白名单指令", only_admin: true },
 		{ type: "command", name: "网页地图", desc: "打开网页地图" },
+		{ type: "command", name: "zt", desc: "申请 ZeroTier 授权" },
 	];
+}
+
+async function handleZt({ zerotier, parsed, event, role, member, auditPath, access }) {
+	const parts = parsed.arg.split(/\s+/).filter(Boolean);
+	const command = (parts[0] || "").toLowerCase();
+	if (command === "pending" || command === "all") {
+		if (!isAdmin(role)) {
+			await audit(auditPath, "zt_deny_role", event, parsed.raw);
+			return { markdown: "只有群主或管理员可以使用这个指令。" };
+		}
+		if (command === "pending") {
+			const result = await zerotier.listPending();
+			if (result.kind === "unconfigured") {
+				return { markdown: ztUnconfigured() };
+			}
+			return { markdown: pendingText(result.rows, access) };
+		}
+		const result = await zerotier.approveAll();
+		if (result.kind === "unconfigured") {
+			return { markdown: ztUnconfigured() };
+		}
+		await audit(auditPath, "zt_all", event, "通过 " + result.done.length + " 个，失败 " + result.failed.length + " 个");
+		return { markdown: allText(result, access) };
+	}
+	if (command !== "add") {
+		return { markdown: ztUsage(role) };
+	}
+	let address = "";
+	for (const token of parts.slice(1)) {
+		if (!ZT_ADDRESS.test(token)) {
+			continue;
+		}
+		if (address) {
+			return { markdown: "一次只能处理一个地址。" };
+		}
+		address = token.toLowerCase();
+	}
+	const mentions = Array.isArray(event.mentions) ? event.mentions.filter((item) => item && item.bot !== true) : [];
+	if (mentions.length > 1) {
+		return { markdown: "一次只能 @ 一个成员。" };
+	}
+	const target = mentions[0] ? mentionedMember(mentions[0], event) : null;
+	if (target && !target.id) {
+		return { markdown: "没读到被 @ 成员的身份，请让对方先在本群发一条消息。" };
+	}
+	if (!isAdmin(role)) {
+		if (!address) {
+			return { markdown: ztUsage(role) };
+		}
+		const result = await zerotier.request(actorOf(member), address);
+		const tag = result.kind === "requested" || result.kind === "updated_authorized" ? "zt_request" : "zt_" + result.kind;
+		await audit(auditPath, tag, event, address + " " + (result.message || ""));
+		return { markdown: requestText(result) };
+	}
+	if (!address && !target) {
+		return { markdown: ztUsage(role) };
+	}
+	const result = await zerotier.adminAdd({ actor: actorOf(member), address, target });
+	await audit(auditPath, "zt_" + result.kind, event, (address + " " + ((target && target.id) || "") + " " + (result.message || "")).trim());
+	return { markdown: adminText(result, access) };
+}
+
+function ztUsage(role) {
+	const lines = ["用法：`/zt add <10位地址>` 提交自己设备的 ZeroTier 授权申请。"];
+	if (isAdmin(role)) {
+		lines.push("管理员：`/zt add <地址>` 通过该地址的申请（没有申请时授权自己）；`/zt add <地址> @成员`（顺序随意）直接授权该成员；`/zt add @成员` 通过该成员的申请；`/zt pending` 查看待审；`/zt all` 全部通过。");
+	}
+	return lines.join("\n");
+}
+
+function ztUnconfigured() {
+	return "ZeroTier 还没配置，请先在 .env 里填 ZT_NETWORK_ID 和 ZT_TOKEN。";
+}
+
+function requestText(result) {
+	if (result.kind === "unconfigured") return ztUnconfigured();
+	if (result.kind === "usage") return ztUsage("member");
+	if (result.kind === "no_identity") return "没有读到你的 QQ 身份，没法申请。";
+	if (result.kind === "conflict") return "地址 `" + result.address + "` 已经被其他成员占用，请联系管理员。";
+	if (result.kind === "updated_authorized") {
+		const replaced = result.replaced ? "（原申请 `" + result.replaced + "` 已覆盖）" : "";
+		return "你当前的授权地址是 `" + result.current + "`。新申请 `" + result.address + "` 已提交" + replaced + "，通过前旧地址仍然有效。";
+	}
+	const replaced = result.replaced ? "（原申请 `" + result.replaced + "` 已覆盖）" : "";
+	return "已提交 ZeroTier 授权申请：`" + result.address + "`" + replaced + "，等待管理员通过。";
+}
+
+function adminText(result, access) {
+	if (result.kind === "unconfigured") return ztUnconfigured();
+	if (result.kind === "usage") return ztUsage("owner");
+	if (result.kind === "no_identity") return "没读到成员身份，没法授权。";
+	if (result.kind === "conflict") return "地址 `" + result.address + "` 已经被其他成员占用，没有授权。";
+	if (result.kind === "no_request") return "**" + escapeMd(memberName(result.target, access)) + "** 没有待审申请。直接授权请带上地址：`/zt add <地址> @成员`。";
+	if (result.kind === "error") return "ZeroTier 授权失败：" + escapeMd(result.message);
+	if (result.kind !== "approved") return "已完成。";
+	const lines = ["已授权 **" + escapeMd(memberName(result.target, access)) + "** 的地址 `" + result.address + "`。"];
+	if (result.ipAssignments && result.ipAssignments.length) {
+		lines.push("分配地址：" + result.ipAssignments.map((ip) => "`" + ip + "`").join("、"));
+	}
+	if (result.revoked) {
+		lines.push("已踢出旧地址 `" + result.revoked + "`。");
+	}
+	if (result.revokeError) {
+		lines.push("旧地址 `" + result.previousAddress + "` 取消失败：" + escapeMd(result.revokeError));
+	}
+	return lines.join("\n");
+}
+
+function pendingText(rows, access) {
+	if (!rows || rows.length === 0) return "当前没有待审申请。";
+	const lines = ["| 成员 | 地址 |", "| --- | --- |"];
+	for (const row of rows.slice(0, 30)) {
+		lines.push("| " + cell(memberName(row, access)) + " | " + cell(row.address) + " |");
+	}
+	if (rows.length > 30) {
+		lines.push("", "还有 " + (rows.length - 30) + " 条未列出。");
+	}
+	return lines.join("\n");
+}
+
+function allText(result, access) {
+	if (result.done.length === 0 && result.failed.length === 0) return "当前没有待审申请。";
+	const lines = ["已通过 " + result.done.length + " 个待审。"];
+	for (const item of result.done) {
+		lines.push("- " + escapeMd(memberName(item.target, access)) + "：`" + item.address + "`");
+	}
+	if (result.failed.length) {
+		lines.push("", "失败 " + result.failed.length + " 个：");
+		for (const item of result.failed) {
+			lines.push("- " + escapeMd(memberName({ id: item.id }, access)) + "：`" + item.address + "`（" + escapeMd(item.message) + "）");
+		}
+	}
+	return lines.join("\n");
+}
+
+function mentionedMember(user, event) {
+	const memberOpenid = user.member_openid || user.id || "";
+	const unionOpenid = user.union_openid || "";
+	return {
+		id: unionOpenid || memberOpenid,
+		memberOpenid,
+		unionOpenid,
+		username: user.username || "",
+		role: user.member_role || "",
+		groupOpenid: event.group_openid || "",
+	};
+}
+
+function actorOf(member) {
+	return {
+		id: member.unionOpenid || member.memberOpenid || "",
+		memberOpenid: member.memberOpenid || "",
+		unionOpenid: member.unionOpenid || "",
+		username: member.username || "",
+		role: member.role || "",
+		groupOpenid: member.groupOpenid || "",
+	};
+}
+
+function memberName(value, access) {
+	const id = typeof value === "string" ? value : (value && value.id) || "";
+	const username = (value && typeof value === "object" && value.username) || (access && access.nameOf ? access.nameOf(id) : "");
+	return username || shortId(id);
+}
+
+function shortId(id) {
+	const text = String(id || "");
+	if (!text) return "该成员";
+	return text.length > 12 ? text.slice(0, 6) + "…" + text.slice(-4) : text;
 }
